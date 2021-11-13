@@ -2643,7 +2643,7 @@ class PageObject(DictionaryObject):
                 content = ContentStream(content, self.pdf)
             self[NameObject("/Contents")] = content.flateEncode()
 
-    def extractText(self):
+    def extractText(self, skip_intertwined_text=True):
         """
         Locate all text drawing commands, in the order they are provided in the
         content stream, and extract the text.  This works well for some PDF
@@ -2661,12 +2661,17 @@ class PageObject(DictionaryObject):
         # Note: we check all strings are TextStringObjects.  ByteStringObjects
         # are strings where the byte->string encoding was unknown, so adding
         # them to the text here would be gibberish.
+        # 
+        indent = 0
+        previous_width = 0
+        skip_next = False
         for operands, operator in content.operations:
+            if not operands:  # Empty operands list contributes no text
+                operands = [""]
             if operator == b_("Tj"):
                 _text = operands[0]
                 if isinstance(_text, TextStringObject):
                     text += _text
-                    text += "\n"
             elif operator == b_("T*"):
                 text += "\n"
             elif operator == b_("'"):
@@ -2680,10 +2685,34 @@ class PageObject(DictionaryObject):
                     text += "\n"
                     text += _text
             elif operator == b_("TJ"):
-                for i in operands[0]:
-                    if isinstance(i, TextStringObject):
-                        text += i
-                text += "\n"
+                if skip_intertwined_text and skip_next:
+                    skip_next = False
+                else:
+                    for i in operands[0]:
+                        if isinstance(i, TextStringObject):
+                            text += i
+                            previous_width += len(i)
+                        elif isinstance(i, FloatObject) or isinstance(i, NumberObject):
+                            if text and (not text[-1] in " \n"):
+                                text += " " * int(i / -600)
+                                previous_width += int(i / -600)
+            elif operator == b_("Td"):
+                indent = indent + operands[0]
+                if operands[1] == 0:
+                    if int(operands[0] / 20) >= previous_width:
+                        text += " " * (int(operands[0] / 20) - previous_width)
+                    else:
+                        skip_next = True
+                        # If skip_intertwined_text is false, this will result in no space between the two 'lines'
+                else:
+                    previous_width = 0
+                    text += "\n" * max(0, int(operands[1] / -50)) + " " * max(0, int(indent / 20))
+            elif operator == b_("Tm"):
+                indent = operands[4]
+                text += " " * max(0, int(indent / 20))
+            elif operator == b_("TD") or operator == b_("Tm"):
+                if text and (not text[-1] in " \n"):
+                    text += " "
         return text
 
     mediaBox = createRectangleAccessor("/MediaBox", ())
